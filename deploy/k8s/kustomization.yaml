@@ -1,0 +1,19 @@
+# kubectl apply -k deploy/k8s     (after creating the inference-api-keys secret, see secrets.example.yaml)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: model-serving
+resources:
+  - namespace.yaml
+  - gateway.yaml
+  - vllm.yaml
+  - dashboard.yaml
+  - monitoring.yaml
+  - rules.yaml
+  - networkpolicy.yaml
+images:        # set these to the images you pushed (see deploy/gke/create_cluster.sh)
+  - name: gateway
+    newName: REGION-docker.pkg.dev/PROJECT_ID/serving/gateway
+    newTag: "1.0.0"
+  - name: dashboard
+    newName: REGION-docker.pkg.dev/PROJECT_ID/serving/dashboard
+    newTag: "1.0.0"

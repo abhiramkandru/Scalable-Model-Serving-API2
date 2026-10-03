@@ -1,0 +1,42 @@
+# React dashboard (nginx). Deliberately has no Ingress: expose it behind IAP / your SSO proxy, or use
+#   kubectl -n model-serving port-forward svc/dashboard 8080:80
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  labels: { app: dashboard }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: dashboard }
+  template:
+    metadata:
+      labels: { app: dashboard }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: dashboard
+          image: dashboard
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: API_UPSTREAM, value: gateway:80 }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+spec:
+  selector: { app: dashboard }
+  ports:
+    - { name: http, port: 80, targetPort: http }

@@ -1,0 +1,79 @@
+# vLLM model server: continuous batching + paged KV cache + prefix caching on GPU nodes.
+# Pinned to the L4 node pool (see deploy/gke/create_cluster.sh). Pin the image to a tag you have tested.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  labels: { app: vllm }
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }   # GPUs are scarce: replace in place
+  selector:
+    matchLabels: { app: vllm }
+  template:
+    metadata:
+      labels: { app: vllm }
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-l4
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: cloud.google.com/gke-accelerator, operator: In, values: ["nvidia-l4"] }
+        podAntiAffinity:                      # spread replicas over GPU nodes
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app: vllm }
+      tolerations:
+        - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest      # TODO pin a tested version tag
+          args:
+            - --model=Qwen/Qwen2.5-7B-Instruct
+            - --max-model-len=4096
+            - --gpu-memory-utilization=0.90
+            - --max-num-seqs=128
+            - --enable-prefix-caching
+          ports:
+            - { name: http, containerPort: 8000 }
+          env:
+            - name: HUGGING_FACE_HUB_TOKEN    # only needed for gated models
+              valueFrom:
+                secretKeyRef: { name: hf-token, key: token, optional: true }
+          resources:
+            requests: { cpu: "4", memory: 20Gi }
+            limits: { memory: 28Gi, nvidia.com/gpu: 1 }
+          startupProbe:                       # model download + load can take several minutes
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 90
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          volumeMounts:
+            - { name: shm, mountPath: /dev/shm }
+            - { name: model-cache, mountPath: /root/.cache/huggingface }
+      volumes:
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 2Gi }
+        - name: model-cache
+          emptyDir: {}                        # use a PVC / Hyperdisk ML volume to avoid re-downloading on every pod start
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  labels: { app: vllm }
+spec:
+  selector: { app: vllm }
+  ports:
+    - { name: http, port: 8000, targetPort: http }

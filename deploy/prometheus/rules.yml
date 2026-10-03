@@ -1,0 +1,88 @@
+# SLI recording rules + error-budget burn-rate alerts (multi-window, multi-burn-rate; Google SRE workbook).
+#
+# SLO: 99.5% of requests succeed (status ok) over a rolling window  =>  error budget = 0.005.
+# "Bad" outcomes: error, timeout, shed (503). Client mistakes (4xx, rate limits) do not count against the SLO.
+# If you change SLO_AVAILABILITY on the server, change the 0.005 below to (1 - SLO) as well.
+#
+# After editing, regenerate the GKE copy:  python deploy/sync_rules.py
+groups:
+  - name: inference-sli
+    interval: 15s
+    rules:
+      - record: job:inference_requests:rate5m
+        expr: sum(rate(inference_requests_total{variant="primary"}[5m]))
+      - record: job:inference_error_ratio:rate5m
+        expr: |
+          sum(rate(inference_requests_total{variant="primary",status=~"error|timeout|shed"}[5m]))
+          / sum(rate(inference_requests_total{variant="primary",status=~"ok|error|timeout|shed"}[5m]))
+      - record: job:inference_error_ratio:rate30m
+        expr: |
+          sum(rate(inference_requests_total{variant="primary",status=~"error|timeout|shed"}[30m]))
+          / sum(rate(inference_requests_total{variant="primary",status=~"ok|error|timeout|shed"}[30m]))
+      - record: job:inference_error_ratio:rate1h
+        expr: |
+          sum(rate(inference_requests_total{variant="primary",status=~"error|timeout|shed"}[1h]))
+          / sum(rate(inference_requests_total{variant="primary",status=~"ok|error|timeout|shed"}[1h]))
+      - record: job:inference_error_ratio:rate6h
+        expr: |
+          sum(rate(inference_requests_total{variant="primary",status=~"error|timeout|shed"}[6h]))
+          / sum(rate(inference_requests_total{variant="primary",status=~"ok|error|timeout|shed"}[6h]))
+      - record: job:inference_latency_p95_seconds:rate5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(inference_request_duration_seconds_bucket{variant="primary"}[5m])))
+      - record: job:inference_latency_slow_ratio:rate5m   # share of requests slower than the 0.5 s latency SLO
+        expr: |
+          1 - (
+            sum(rate(inference_request_duration_seconds_bucket{variant="primary",le="0.5"}[5m]))
+            / sum(rate(inference_request_duration_seconds_count{variant="primary"}[5m]))
+          )
+
+  - name: inference-alerts
+    rules:
+      - alert: InferenceErrorBudgetFastBurn
+        expr: |
+          job:inference_error_ratio:rate1h > (14.4 * 0.005)
+          and job:inference_error_ratio:rate5m > (14.4 * 0.005)
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "Burning the 30-day error budget {{ humanize (mul $value 200) }}x too fast (page)"
+          description: "At this rate the whole monthly budget is gone in ~2 days. Check shed/timeout rates and GPU saturation."
+
+      - alert: InferenceErrorBudgetSlowBurn
+        expr: |
+          job:inference_error_ratio:rate6h > (6 * 0.005)
+          and job:inference_error_ratio:rate30m > (6 * 0.005)
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Sustained error-budget burn (ticket)"
+
+      - alert: InferenceLatencyP95High
+        expr: job:inference_latency_p95_seconds:rate5m > 0.5
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: "p95 latency above the 500 ms objective"
+
+      - alert: InferenceQueueSaturated
+        expr: max by (instance) (inference_queue_depth) > 100
+        for: 5m
+        labels: { severity: ticket }
+        annotations:
+          summary: "{{ $labels.instance }} has had >100 queued requests for 5 min; scale out or raise max_batch_size"
+
+      - alert: InferenceGpuSaturated
+        expr: avg(gpu_utilization_percent) > 95
+        for: 15m
+        labels: { severity: info }
+        annotations:
+          summary: "GPUs have been >95% busy for 15 min; consider adding replicas"
+
+      - alert: InferenceShadowRegression
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(inference_request_duration_seconds_bucket{variant="shadow"}[10m])))
+          > 1.2 * histogram_quantile(0.95, sum by (le) (rate(inference_request_duration_seconds_bucket{variant="primary"}[10m])))
+        for: 10m
+        labels: { severity: info }
+        annotations:
+          summary: "Shadow candidate p95 is >20% slower than primary; do not promote"

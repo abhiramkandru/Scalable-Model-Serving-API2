@@ -1,0 +1,21 @@
+# Google Managed Prometheus scrape configs (GKE enables managed collection by default on new clusters).
+# Alert/recording rules live in rules.yaml (generated from deploy/prometheus/rules.yml).
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: gateway
+spec:
+  selector:
+    matchLabels: { app: gateway }
+  endpoints:
+    - { port: http, path: /metrics, interval: 15s }
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: vllm
+spec:
+  selector:
+    matchLabels: { app: vllm }
+  endpoints:
+    - { port: http, path: /metrics, interval: 15s }

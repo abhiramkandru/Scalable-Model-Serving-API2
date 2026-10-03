@@ -1,0 +1,4 @@
+@import "tailwindcss";
+
+:root { color-scheme: dark; }
+input[type="range"] { accent-color: #38bdf8; }

@@ -1,0 +1,26 @@
+# OPTIONAL (not in kustomization.yaml): scale GPU replicas on vLLM's own queue depth.
+# Needs a custom-metrics adapter that serves Managed Prometheus metrics to the HPA
+# (GKE: custom-metrics-stackdriver-adapter). The metric name below follows the GMP convention
+# "prometheus.googleapis.com|<metric>|gauge": check the exact name in Metrics Explorer for your vLLM version.
+# Without an adapter, scale vLLM manually (`kubectl scale deploy/vllm --replicas=N`) or scale the GPU node pool.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vllm
+  namespace: model-serving
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: vllm }
+  minReplicas: 1
+  maxReplicas: 8
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: prometheus.googleapis.com|vllm:num_requests_waiting|gauge
+        target: { type: AverageValue, averageValue: "5" }
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies: [{ type: Pods, value: 1, periodSeconds: 120 }]   # new GPU pods take minutes to load the model
+    scaleDown:
+      stabilizationWindowSeconds: 600

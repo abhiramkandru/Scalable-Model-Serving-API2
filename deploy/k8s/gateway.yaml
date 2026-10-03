@@ -1,0 +1,105 @@
+# Gateway: auth, per-tenant rate limits, load shedding, metrics and shadow routing in front of vLLM.
+# CPU-only; scales horizontally on CPU. Image name `gateway` is rewritten by kustomization.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+data:
+  BACKEND: openai_proxy
+  UPSTREAM_URL: http://vllm:8000
+  UPSTREAM_MODEL: Qwen/Qwen2.5-7B-Instruct   # must match the model vLLM serves (see vllm.yaml)
+  AUTH_ENABLED: "true"
+  SLO_AVAILABILITY: "0.995"
+  SLO_LATENCY_MS: "500"
+  OTEL_SERVICE_NAME: model-gateway
+  # PROMETHEUS_URL: http://frontend.gmp-public.svc:9090   # enables the all-replicas view in the dashboard (needs the GMP query frontend)
+  # OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318  # distributed tracing (build the image with --build-arg WITH_OTEL=true)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels: { app: gateway }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: gateway }
+  template:
+    metadata:
+      labels: { app: gateway }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: gateway }
+      containers:
+        - name: gateway
+          image: gateway
+          ports:
+            - { name: http, containerPort: 8000 }
+          envFrom:
+            - configMapRef: { name: gateway-config }
+          env:
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: API_KEYS_JSON
+              valueFrom:
+                secretKeyRef: { name: inference-api-keys, key: api-keys.json }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels: { app: gateway }
+spec:
+  selector: { app: gateway }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: gateway }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: gateway }
+  minReplicas: 3
+  maxReplicas: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 60 }
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies: [{ type: Percent, value: 100, periodSeconds: 30 }]
+    scaleDown:
+      stabilizationWindowSeconds: 300

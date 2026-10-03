@@ -1,0 +1,58 @@
+# Isolation for a multi-tenant cluster. Requires a CNI that enforces NetworkPolicy
+# (GKE Dataplane V2 or Calico; create_cluster.sh enables Dataplane V2).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# Only the dashboard, namespaces you label `model-serving/access=true` (your ingress / IAP proxy), and the
+# managed-Prometheus collectors may reach the gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+spec:
+  podSelector:
+    matchLabels: { app: gateway }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: dashboard } }
+        - namespaceSelector: { matchLabels: { model-serving/access: "true" } }
+      ports: [{ port: 8000, protocol: TCP }]
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: gmp-system } }
+      ports: [{ port: 8000, protocol: TCP }]
+---
+# vLLM accepts traffic only from the gateway (and metric scrapes), never directly from tenants.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vllm-ingress
+spec:
+  podSelector:
+    matchLabels: { app: vllm }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: gateway } }
+      ports: [{ port: 8000, protocol: TCP }]
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: gmp-system } }
+      ports: [{ port: 8000, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dashboard-ingress
+spec:
+  podSelector:
+    matchLabels: { app: dashboard }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { model-serving/access: "true" } }
+      ports: [{ port: 8080, protocol: TCP }]
