@@ -51,7 +51,8 @@ def test_streaming_sse():
             lines = [ln for ln in r.iter_lines() if ln.startswith("data: ")]
         assert lines[-1] == "data: [DONE]"
         events = [json.loads(ln[6:]) for ln in lines[:-1]]
-assert sum(1 for e in events if "text" in e and not e.get("done")) == 5 and events[-1]["done"] is True
+        assert sum(1 for e in events if "text" in e and not e.get("done")) == 5 and events[-1]["done"] is True
+
 
 def test_vertex_predict_contract():
     with client() as c:
